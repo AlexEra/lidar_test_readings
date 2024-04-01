@@ -10,6 +10,7 @@ RM := rm -rf
 # All of the sources participating in the build are defined here
 -include sources.mk
 -include Drivers/STM32F1xx_HAL_Driver/Src/subdir.mk
+-include Core/usart-ring/subdir.mk
 -include Core/Startup/subdir.mk
 -include Core/Src/subdir.mk
 -include objects.mk
@@ -60,8 +61,8 @@ all: main-build
 main-build: lidar_test_readings.elf secondary-outputs
 
 # Tool invocations
-lidar_test_readings.elf: $(OBJS) $(USER_OBJS) D:\codding\stm_cube_dev\lidar_test_readings\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "lidar_test_readings.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"D:\codding\stm_cube_dev\lidar_test_readings\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="lidar_test_readings.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+lidar_test_readings.elf: $(OBJS) $(USER_OBJS) E:\SPIIRAS\workspace_stm\lidar_test_readings\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "lidar_test_readings.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"E:\SPIIRAS\workspace_stm\lidar_test_readings\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="lidar_test_readings.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

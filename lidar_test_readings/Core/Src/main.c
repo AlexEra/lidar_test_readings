@@ -18,10 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "usart_ring.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,20 +44,15 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 uint8_t buf[10];
 float angle, dist_mm;
-volatile uint8_t scan_flag = 0;
+usart_ring_t lidar_rx;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_DMA_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -63,40 +60,65 @@ static void MX_DMA_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void start_scan(void) {
-	scan_flag = 0;
-	HAL_UART_Receive_DMA(&huart1, buf, RESPONSE_BYTES_COUNT);
-	HAL_Delay(10);
+	HAL_UART_StateTypeDef status;
 	uint8_t start_cmd[] = {0xA5, 0x20};
+	__HAL_UART_DISABLE_IT(&huart1, UART_IT_RXNE);
 	HAL_UART_Transmit_IT(&huart1, start_cmd, sizeof(start_cmd));
+	do {
+		status = HAL_UART_GetState(&huart1);
+	} while (status != HAL_UART_STATE_ERROR || status != HAL_UART_STATE_BUSY_TX);
+	__HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
 }
 
 void stop_scan(void) {
+	HAL_UART_StateTypeDef status;
 	uint8_t stop_cmd[] = {0xA5, 0x25};
+	__HAL_UART_DISABLE_IT(&huart1, UART_IT_RXNE);
 	HAL_UART_Transmit_IT(&huart1, stop_cmd, sizeof(stop_cmd));
-	scan_flag = 0;
+	do {
+		status = HAL_UART_GetState(&huart1);
+	} while (status != HAL_UART_STATE_ERROR || status != HAL_UART_STATE_BUSY_TX);
 	HAL_Delay(10);
+	usart_ring_clear(&lidar_rx);
+	__HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if ((buf[0] == 0xA5) && (buf[1] == 0x5A) && (buf[2] == 0x05)) scan_flag = 1;
-
-	if (scan_flag) {
-		HAL_UART_Receive_DMA(&huart1, buf, SCAN_BYTES_COUNT);
-	}
+void reset_lidar(void) {
+	HAL_UART_StateTypeDef status;
+	uint8_t reset_cmd[] = {0xA5, 0x40};
+	__HAL_UART_DISABLE_IT(&huart1, UART_IT_RXNE);
+	HAL_UART_Transmit_IT(&huart1, reset_cmd, sizeof(reset_cmd));
+	do {
+		status = HAL_UART_GetState(&huart1);
+	} while (status != HAL_UART_STATE_ERROR || status != HAL_UART_STATE_BUSY_TX);
+	usart_ring_clear(&lidar_rx);
+	__HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
 }
 
-void get_lidar_values(uint8_t *p_buf) {
-	uint8_t s = p_buf[0] & 0x01;
-	uint8_t not_s = (p_buf[0] & 0x02) >> 1;
-	uint8_t c = p_buf[1] & 0x01;
+void get_lidar_values(void) {
+	// TODO: нужно взаимодействие с кольцевым буфером
+	volatile uint8_t s, not_s;
 
-	if (scan_flag && c && (s != not_s)) {
-		angle = ((p_buf[1] >> 1) | (p_buf[2] << 8)) / 64.0f;
+	while (usart_ring_available(&lidar_rx)) {
+		buf[0] = usart_ring_read(&lidar_rx);
+		s = buf[0] & 0x01;
+		not_s = (buf[0] & 0x02) >> 1;
+		if (s != not_s) {
+			buf[1] = usart_ring_read(&lidar_rx);
+			if (buf[1] & 0x01) { // "c" bit should be equal to 1
+				if (buf[0] == 0x0A) {
+					for (uint8_t i = 0; i < 3; i++) usart_ring_read(&lidar_rx);
+				} else if (buf[0] == 0xBE) {
+					for (uint8_t i = 2; i < SCAN_BYTES_COUNT; i++) buf[i] = usart_ring_read(&lidar_rx);
+					angle = ((buf[1] >> 1) | (buf[2] << 7)) / 64.0f;
 #ifdef DENSE_MODE
-		dist_mm = (p_buf[3] | (p_buf[4] << 8));
+					dist_mm = (buf[3] | (buf[4] << 8));
 #else
-		dist_mm = (p_buf[3] | (p_buf[4] << 8)) / 4.0f;
+					dist_mm = (buf[3] | (buf[4] << 8)) / 4.0f;
 #endif
+				}
+			}
+		}
 	}
 }
 /* USER CODE END 0 */
@@ -130,15 +152,16 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
-  MX_DMA_Init();
   /* USER CODE BEGIN 2 */
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_TXE);
+  usart_ring_init(&lidar_rx, &huart1, 500);
   start_scan();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-	  get_lidar_values(buf);
+	  get_lidar_values();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -182,69 +205,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 256000;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Channel5_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-
 }
 
 /* USER CODE BEGIN 4 */
